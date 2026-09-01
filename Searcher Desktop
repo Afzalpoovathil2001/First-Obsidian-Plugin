@@ -1,4 +1,4 @@
-//fully ready movie searcher plugin
+//fully ready movie searcher plugin for desktop
 import {
 	App,
 	Modal,
