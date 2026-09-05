@@ -1,0 +1,1122 @@
+//perfectly working movie searcher with mobile functioning also
+import {
+	App,
+	Modal,
+	Notice,
+	Plugin,
+	PluginSettingTab,
+	Setting,
+  TFile,
+  requestUrl
+} from 'obsidian';
+
+interface MovieSearcherSettings {
+	tmdbReadAccessToken: string;
+  omdbApiKey: string;
+	castCount: number;
+}
+
+const DEFAULT_SETTINGS: MovieSearcherSettings = {
+	tmdbReadAccessToken: '',
+  omdbApiKey: '',
+	castCount: 10,
+};
+//this is for first input tab.
+type SearchMode = 'title' | 'id';
+
+class MovieSearchModal extends Modal {
+	onSubmit: (query: string, mode: SearchMode) => void;
+	searchMode: SearchMode = 'title';
+
+	constructor(
+		app: App,
+		onSubmit: (query: string, mode: SearchMode) => void,
+	) {
+		super(app);
+		this.onSubmit = onSubmit;
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+
+		contentEl.createEl('h2', {
+			text: 'Add movie',
+		});
+
+		// Search input
+		const input = contentEl.createEl('input', {
+			type: 'text',
+			placeholder: 'Movie title + year...',
+		});
+
+		input.style.width = '100%';
+
+		// Search mode buttons
+		const modeContainer = contentEl.createEl('div');
+
+		modeContainer.style.display = 'flex';
+		modeContainer.style.gap = '6px';
+		modeContainer.style.marginTop = '10px';
+
+		const titleButton = modeContainer.createEl('button', {
+			text: 'Title',
+		});
+
+		const idButton = modeContainer.createEl('button', {
+			text: 'ID',
+		});
+
+		const updateMode = () => {
+			if (this.searchMode === 'title') {
+				titleButton.addClass('mod-cta');
+				idButton.removeClass('mod-cta');
+
+				input.placeholder = 'Movie title + year...';
+			} else {
+				idButton.addClass('mod-cta');
+				titleButton.removeClass('mod-cta');
+
+				input.placeholder =
+					'Enter TMDB ID or IMDb ID...';
+			}
+		};
+
+		titleButton.addEventListener('click', () => {
+			this.searchMode = 'title';
+			updateMode();
+			input.focus();
+		});
+
+		idButton.addEventListener('click', () => {
+			this.searchMode = 'id';
+			updateMode();
+			input.focus();
+		});
+
+		updateMode();
+
+		// Search button
+		const button = contentEl.createEl('button', {
+			text: 'Search',
+		});
+
+		button.style.marginTop = '10px';
+
+		const submitSearch = () => {
+			const query = input.value.trim();
+
+			if (!query) {
+				new Notice('Please enter a movie title or ID.');
+				return;
+			}
+
+			this.onSubmit(query, this.searchMode);
+			this.close();
+		};
+
+		button.addEventListener('click', submitSearch);
+
+		input.addEventListener('keydown', (event) => {
+			if (event.key === 'Enter') {
+				event.preventDefault();
+				event.stopPropagation();
+
+				submitSearch();
+			}
+		});
+
+		// Automatically place cursor in the search bar
+		input.focus();
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+}
+//this is for second modal that shows the results of the search.
+class MovieResultsModal extends Modal {
+	results: any[];
+	onSelect: (movie: any) => void;
+
+	constructor(
+		app: App,
+		results: any[],
+		onSelect: (movie: any) => void,
+	) {
+		super(app);
+		this.results = results;
+		this.onSelect = onSelect;
+	}
+
+	onOpen() {
+	const { contentEl } = this;
+
+	contentEl.createEl('h2', { text: 'Select a movie' });
+
+	if (this.results.length === 0) {
+		contentEl.createEl('p', {
+			text: 'No movies found.',
+		});
+
+		const doneButton = contentEl.createEl('button', {
+			text: 'Okay',
+		});
+
+		doneButton.style.marginTop = '10px';
+
+		doneButton.addEventListener('click', () => {
+			this.close();
+		});
+
+		return;
+	}
+
+	for (const movie of this.results) {
+		const year = movie.release_date
+			? movie.release_date.substring(0, 4)
+			: 'Unknown year';
+
+		const item = contentEl.createEl('div');
+
+		item.style.padding = '10px';
+		item.style.cursor = 'pointer';
+		item.style.borderBottom =
+			'1px solid var(--background-modifier-border)';
+
+		item.createEl('div', {
+			text: movie.title,
+		});
+
+		item.createEl('small', {
+			text: `${year}  •  TMDB ID: ${movie.id}`,
+		});
+
+		if (movie.overview) {
+			item.createEl('p', {
+				text: getPlotPreview(movie.overview),
+			});
+		}
+
+		item.addEventListener('click', () => {
+			this.onSelect(movie);
+			this.close();
+		});
+	}
+}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+}
+//this is for the settings tab.
+class MovieSearcherSettingTab extends PluginSettingTab {
+	plugin: MovieSearcherPlugin;
+
+	constructor(app: App, plugin: MovieSearcherPlugin) {
+		super(app, plugin);
+		this.plugin = plugin;
+	}
+
+	display(): void {
+		const { containerEl } = this;
+
+		containerEl.empty();
+
+		containerEl.createEl('h2', {
+			text: 'Searcher Settings',
+		});
+
+		new Setting(containerEl)
+			.setName('TMDB API Read Access Token')
+			.setDesc('Enter your TMDB API read access token.')
+			.addText((text) =>
+				text
+					.setPlaceholder('Enter API read access token')
+					.setValue(this.plugin.settings.tmdbReadAccessToken)
+					.onChange(async (value) => {
+						this.plugin.settings.tmdbReadAccessToken = value;
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName('OMDB API Key')
+			.setDesc('Enter your OMDB API key.')
+			.addText((text) =>
+				text
+					.setPlaceholder('Enter OMDB API key')
+					.setValue(this.plugin.settings.omdbApiKey)
+					.onChange(async (value) => {
+						this.plugin.settings.omdbApiKey = value;
+						await this.plugin.saveSettings();
+					}),
+			);
+    new Setting(containerEl)
+    .setName('Cast members')
+    .setDesc('Number of cast members to add to movie notes.')
+    .addDropdown((dropdown) =>
+		  dropdown
+        .addOption('10', '10')
+        .addOption('20', '20')
+        .setValue(String(this.plugin.settings.castCount))
+        .onChange(async (value) => {
+          this.plugin.settings.castCount = Number(value);
+				  await this.plugin.saveSettings();
+			}),
+	);
+	}
+}
+
+//for list of certifications for the movie in the frontmatter.
+function getCertification(
+	releaseDates: any[],
+): string {
+	const usCertifications =
+		getCountryCertifications(releaseDates, 'US');
+
+	// 1. Highest available US rating
+	if (usCertifications.length > 0) {
+		return getHighestUSCertification(usCertifications);
+	}
+
+	// 2. No US rating → find best US equivalent
+	const allCertifications =
+		getAllCertifications(releaseDates);
+
+	return getBestUSRatingEquivalent(allCertifications);
+}
+
+function getCountryCertifications(
+	releaseDates: any[],
+	countryCode: string,
+): string[] {
+	const region = releaseDates.find(
+		(item: any) =>
+			item.iso_3166_1 === countryCode,
+	);
+
+	if (!region?.release_dates) {
+		return [];
+	}
+
+	return region.release_dates
+		.map(
+			(release: any) =>
+				release.certification?.trim(),
+		)
+		.filter(
+			(certification: string) =>
+				certification.length > 0,
+		);
+}
+
+function getAllCertifications(
+	releaseDates: any[],
+): {
+	country: string;
+	certification: string;
+}[] {
+	const certifications: {
+		country: string;
+		certification: string;
+	}[] = [];
+
+	for (const region of releaseDates) {
+		for (const release of region.release_dates ?? []) {
+			const certification =
+				release.certification?.trim();
+
+			if (!certification) {
+				continue;
+			}
+
+			certifications.push({
+				country: region.iso_3166_1,
+				certification,
+			});
+		}
+	}
+
+	return certifications;
+}
+
+//equivalent ratings for different countries to US ratings.
+function getBestUSRatingEquivalent(
+	certifications: {
+		country: string;
+		certification: string;
+	}[],
+): string {
+	const ratingLevels: Record<string, number> = {
+		G: 1,
+		PG: 2,
+		'PG-13': 3,
+		R: 4,
+		'NC-17': 5,
+	};
+
+	let bestRating = '';
+	let bestLevel = 0;
+
+	for (const item of certifications) {
+		const certification = item.certification
+			.trim()
+			.toUpperCase();
+
+		let rating = '';
+		let level = 0;
+
+		// Common ratings already close to the US system
+		if (certification === 'G') {
+			rating = 'G';
+			level = 1;
+		} else if (certification === 'PG') {
+			rating = 'PG';
+			level = 2;
+		} else if (
+			certification === 'PG-13' ||
+			certification === 'PG13'
+		) {
+			rating = 'PG-13';
+			level = 3;
+		} else if (
+			certification === 'R' ||
+			certification === '18' ||
+			certification === '18+' ||
+			certification === 'A' ||
+			certification === 'VM18' ||
+			certification === 'R18'
+		) {
+			rating = 'R';
+			level = 4;
+		} else if (
+			certification === 'NC-17' ||
+			certification === 'NC17'
+		) {
+			rating = 'NC-17';
+			level = 5;
+		}
+
+		// General fallback for common age-number systems
+		else if (
+			['16', '16+', '15', '15+', '14', '14+'].includes(
+				certification,
+			)
+		) {
+			rating = 'R';
+			level = 4;
+		} else if (
+			['13', '13+', '12', '12+', '12A'].includes(
+				certification,
+			)
+		) {
+			rating = 'PG-13';
+			level = 3;
+		} else if (
+			['7', '7+', 'PG'].includes(
+				certification,
+			)
+		) {
+			rating = 'PG';
+			level = 2;
+		} else if (
+			['U', '0', 'ALL', 'E'].includes(
+				certification,
+			)
+		) {
+			rating = 'G';
+			level = 1;
+		}
+
+		if (level > bestLevel) {
+			bestRating = rating;
+			bestLevel = level;
+		}
+	}
+
+	// If nothing could be interpreted, use the first
+	// available certification rather than leaving it empty.
+	if (!bestRating) {
+	const firstCertification = certifications[0];
+
+	if (firstCertification) {
+		return firstCertification.certification;
+	}
+
+	return 'NR';
+}
+
+return bestRating;
+}
+
+function getHighestUSCertification(
+	certifications: string[],
+): string {
+	const order: Record<string, number> = {
+		G: 1,
+		PG: 2,
+		'PG-13': 3,
+		R: 4,
+		'NC-17': 5,
+	};
+
+	let best = '';
+	let bestScore = -1;
+
+	for (const certification of certifications) {
+		const score =
+			order[certification.toUpperCase()] ?? 0;
+
+		if (score > bestScore) {
+			best = certification;
+			bestScore = score;
+		}
+	}
+
+	return best || certifications[0] || '';
+}
+
+//this is the main plugin class.
+// //I'm using TMDB's V4 API, which requires a Bearer token for authorization.
+// It is a API Read Access Token from TMDB account settings.
+export default class MovieSearcherPlugin extends Plugin {
+	settings: MovieSearcherSettings = DEFAULT_SETTINGS;
+
+	async onload() {
+		await this.loadSettings();
+
+		this.addSettingTab(
+			new MovieSearcherSettingTab(this.app, this),
+		);
+
+		this.addCommand({
+			id: 'movie-searcher',
+			name: 'Add a Movie',
+			callback: () => {
+				new MovieSearchModal(
+	        this.app,
+	        async (query, mode) => {
+            if (mode === 'title') {
+              await this.searchTMDB(query);
+            } else {
+              await this.searchById(query);
+            }
+	        },
+        ).open();
+			},
+		});
+	}
+
+	async loadSettings() {
+		this.settings = Object.assign(
+			{},
+			DEFAULT_SETTINGS,
+			await this.loadData(),
+		);
+	}
+
+	async saveSettings() {
+		await this.saveData(this.settings);
+	}
+
+	async searchTMDB(movieTitle: string) {
+	const token = this.settings.tmdbReadAccessToken;
+
+	if (!token) {
+		new Notice(
+			'TMDB API read access token is not configured.',
+		);
+		return;
+	}
+
+	let query = movieTitle.trim();
+let year = '';
+
+const yearMatch = query.match(
+	/^(.+?)\s+(19\d{2}|20\d{2})$/,
+);
+
+if (yearMatch) {
+	const titlePart = yearMatch[1];
+	const yearPart = yearMatch[2];
+
+	if (titlePart && yearPart) {
+		query = titlePart;
+		year = yearPart;
+	}
+}
+
+	const params = new URLSearchParams();
+
+  params.set('query', query);
+
+if (year) {
+	params.set('year', year);
+}
+
+const url =
+	'https://api.themoviedb.org/3/search/movie?' +
+	params.toString();
+
+	try {
+		const response = await requestUrl({
+			url,
+			method: 'GET',
+			headers: {
+				Authorization: `Bearer ${token}`,
+				accept: 'application/json',
+			},
+		});
+
+		const data = response.json;
+
+		new MovieResultsModal(
+			this.app,
+			data.results,
+			(movie) => {
+				console.log('Selected movie:', movie);
+
+				this.getmovie(movie.id);
+			},
+		).open();
+
+	} catch (error) {
+		console.error(
+			'TMDB search failed:',
+			error,
+		);
+
+		new Notice('Could not search TMDB.');
+	}
+}
+
+async searchById(query: string) {
+	const value = query.trim();
+
+	// IMDb ID
+	if (/^tt\d+$/i.test(value)) {
+		await this.findByIMDbId(value);
+		return;
+	}
+
+	// TMDB numeric ID
+	if (/^\d+$/.test(value)) {
+		await this.getmovie(Number(value));
+		return;
+	}
+
+	new Notice(
+		'Enter a valid TMDB ID or IMDb ID.',
+	);
+}
+	async getmovie(movieId: number) {
+	const token = this.settings.tmdbReadAccessToken;
+
+	if (!token) {
+		new Notice('TMDB API read access token is not configured.');
+		return;
+	}
+
+	const url =
+		`https://api.themoviedb.org/3/movie/${movieId}` +
+		'?append_to_response=credits,external_ids,release_dates';
+
+	try {
+		const response = await requestUrl({
+			url,
+			method: 'GET',
+			headers: {
+				Authorization: `Bearer ${token}`,
+				accept: 'application/json',
+			},
+		});
+
+		const movie = response.json;
+
+		const imdbId =
+			movie.external_ids?.imdb_id ?? '';
+
+		const imdbRating =
+			await this.getIMDbRating(imdbId);
+
+		await this.createMovieNote(
+			movie,
+			imdbRating,
+		);
+
+	} catch (error) {
+		console.error(
+			'TMDB movie details request failed:',
+			error,
+		);
+
+		new Notice('Could not load movie details.');
+	}
+}
+
+  async findExistingMovie(
+    tmdbId: number,
+    imdbId: string,
+  ): Promise<TFile | null> {
+    const files = this.app.vault.getMarkdownFiles();
+
+    for (const file of files) {
+      if (!file.path.startsWith('Media/Movies/')) {
+        continue;
+      }
+
+      const cache = this.app.metadataCache.getFileCache(file);
+
+      if (!cache?.frontmatter) {
+        continue;
+      }
+
+      const frontmatter = cache.frontmatter;
+
+      if (
+        String(frontmatter.tmdb_id) === String(tmdbId)
+      ) {
+        return file;
+      }
+
+      if (
+        imdbId &&
+        String(frontmatter.imdb_id) === imdbId
+      ) {
+        return file;
+      }
+    }
+
+    return null;
+  }
+//this function gets the movie details by its TMDB ID.
+  async getMovieByTmdbId(movieId: number) {
+	const token = this.settings.tmdbReadAccessToken;
+
+	if (!token) {
+		new Notice('TMDB API read access token is not configured.');
+		return;
+	}
+
+	try {
+		const response = await requestUrl({
+			url:
+				`https://api.themoviedb.org/3/movie/${movieId}` +
+				'?append_to_response=credits,external_ids,release_dates',
+			method: 'GET',
+			headers: {
+				Authorization: `Bearer ${token}`,
+				accept: 'application/json',
+			},
+		});
+
+		const movie = response.json;
+
+		const imdbId = movie.external_ids?.imdb_id ?? '';
+		const imdbRating = await this.getIMDbRating(imdbId);
+
+		await this.createMovieNote(movie, imdbRating);
+
+	} catch (error) {
+		console.error('TMDB ID lookup failed:', error);
+		new Notice('Could not load the movie from TMDB ID.');
+	}
+}
+//this function finds the movie by its IMDb ID.
+async findByIMDbId(imdbId: string) {
+	const token = this.settings.tmdbReadAccessToken;
+
+	if (!token) {
+		new Notice('TMDB API read access token is not configured.');
+		return;
+	}
+
+	try {
+		const response = await requestUrl({
+			url:
+				`https://api.themoviedb.org/3/find/${encodeURIComponent(imdbId)}` +
+				'?external_source=imdb_id',
+			method: 'GET',
+			headers: {
+				Authorization: `Bearer ${token}`,
+				accept: 'application/json',
+			},
+		});
+
+		const data = response.json;
+
+		if (!data.movie_results?.length) {
+			new Notice('No movie found for that IMDb ID.');
+			return;
+		}
+
+		const movie = data.movie_results[0];
+
+		await this.getmovie(movie.id);
+
+	} catch (error) {
+		console.error('IMDb ID lookup failed:', error);
+		new Notice('Could not find that IMDb ID on TMDB.');
+	}
+}
+
+//this function updates the existing movie note with the new details with frontmatter.
+  async updateMovieNote(
+	file: TFile,
+	movie: any,
+	imdbRating: number | null,
+  ) {
+  //console.log('Updating movie file:', file.path);
+	const releaseDate = movie.release_date ?? '';
+	const year = releaseDate
+		? releaseDate.substring(0, 4)
+		: '';
+
+	const originalTitle = movie.original_title ?? '';
+
+	const runtime = formatRuntime(movie.runtime);
+
+	const genres =
+		movie.genres?.map((genre: any) => genre.name) ?? [];
+
+	const languages =
+		movie.spoken_languages?.map(
+			(language: any) => language.english_name,
+		) ?? [];
+
+	const countries =
+		movie.production_countries?.map(
+			(country: any) => country.name,
+		) ?? [];
+
+	const studios =
+		movie.production_companies?.map(
+			(company: any) => company.name,
+		) ?? [];
+
+	const director =
+		movie.credits?.crew
+			?.filter(
+				(person: any) => person.job === 'Director',
+			)
+			.map((person: any) => person.name) ?? [];
+
+	const writers =
+		movie.credits?.crew
+			?.filter(
+				(person: any) =>
+					person.job === 'Writer' ||
+					person.job === 'Screenplay' ||
+					person.job === 'Story',
+			)
+			.map((person: any) => person.name) ?? [];
+
+	const producer =
+		movie.credits?.crew
+			?.filter(
+				(person: any) => person.job === 'Producer',
+			)
+			.map((person: any) => person.name) ?? [];
+
+	const cast =
+		movie.credits?.cast
+			?.slice(0, this.settings.castCount)
+			.map((person: any) => person.name) ?? [];
+
+	const certification = getCertification(
+	movie.release_dates?.results ?? [],
+);
+
+	const poster = movie.poster_path
+	? `https://image.tmdb.org/t/p/w780${movie.poster_path}`
+	: '';
+
+	await this.app.fileManager.processFrontMatter(
+		file,
+		(frontmatter) => {
+			frontmatter.title = movie.title ?? '';
+			frontmatter.original_title = originalTitle;
+
+			frontmatter.tmdb_id = movie.id ?? '';
+			frontmatter.imdb_id =
+				movie.external_ids?.imdb_id ?? '';
+
+			frontmatter.released = releaseDate;
+			frontmatter.year = year;
+			frontmatter.runtime = runtime;
+			frontmatter.imdb = imdbRating ?? '';
+
+			frontmatter.genres = genres;
+			frontmatter.languages = languages;
+			frontmatter.countries = countries;
+
+			frontmatter.rated = certification;
+
+			frontmatter.director = director;
+			frontmatter.writer = writers;
+			frontmatter.producer = producer;
+			frontmatter.cast = cast;
+			frontmatter.studio = studios;
+
+			frontmatter.poster = poster;
+			frontmatter.plot = movie.overview ?? '';
+		},
+	);
+
+	new Notice(`Updated: ${file.basename}`);
+}
+  //for imdb rating
+  async getIMDbRating(imdbId: string): Promise<number | null> {
+	const apiKey = this.settings.omdbApiKey;
+
+	if (!apiKey) {
+		new Notice('OMDb API key is not configured.');
+		return null;
+	}
+
+	if (!imdbId) {
+		console.warn('No IMDb ID available for this movie.');
+		return null;
+	}
+
+	const url =
+		`https://www.omdbapi.com/?apikey=${encodeURIComponent(apiKey)}` +
+		`&i=${encodeURIComponent(imdbId)}` +
+		`&plot=short`;
+
+	try {
+		const response = await requestUrl({
+			url,
+			method: 'GET',
+		});
+
+		const data = response.json;
+
+		if (data.Response !== 'True') {
+			console.warn('OMDb error:', data.Error);
+			new Notice(
+				`OMDb: ${data.Error ?? 'Movie not found'}`,
+			);
+			return null;
+		}
+
+		const imdbRating =
+			Number.parseFloat(data.imdbRating);
+
+		if (Number.isNaN(imdbRating)) {
+			return null;
+		}
+
+		return imdbRating;
+	} catch (error) {
+		console.error(
+			'IMDb rating request failed:',
+			error,
+		);
+
+		new Notice(
+			'Could not retrieve IMDb rating.',
+		);
+
+		return null;
+	}
+}
+
+  //this function creates a markdown file with the movie details in the vault.
+async createMovieNote(
+	movie: any,
+	imdbRating: number | null,
+) {
+	const title = movie.title ?? '';
+	const tmdbId = movie.id ?? '';
+	const imdbId = movie.external_ids?.imdb_id ?? '';
+
+	const existingFile = await this.findExistingMovie(
+		tmdbId,
+		imdbId,
+	);
+
+	if (existingFile) {
+		await this.updateMovieNote(
+			existingFile,
+			movie,
+			imdbRating,
+		);
+		return;
+	}
+
+	const releaseDate = movie.release_date ?? '';
+const year = releaseDate ? releaseDate.substring(0, 4) : '';
+
+const originalTitle = movie.original_title ?? '';
+
+const runtime = formatRuntime(movie.runtime);
+
+//const rating = imdbRating ?? '';
+
+const genres =
+	movie.genres?.map((genre: any) => genre.name) ?? [];
+
+const languages =
+	movie.spoken_languages?.map(
+		(language: any) => language.english_name,
+	) ?? [];
+
+const countries =
+	movie.production_countries?.map(
+		(country: any) => country.name,
+	) ?? [];
+
+const studios =
+	movie.production_companies?.map(
+		(company: any) => company.name,
+	) ?? [];
+
+const director =
+	movie.credits?.crew
+		?.filter((person: any) => person.job === 'Director')
+		.map((person: any) => person.name) ?? [];
+
+const writers =
+	movie.credits?.crew
+		?.filter(
+			(person: any) =>
+				person.job === 'Writer' ||
+				person.job === 'Screenplay' ||
+				person.job === 'Story',
+		)
+		.map((person: any) => person.name) ?? [];
+
+const producer =
+  movie.credits?.crew
+    ?.filter((person: any) => person.job === 'Producer')
+    .map((person: any) => person.name) ?? [];
+
+const cast =
+	movie.credits?.cast
+		?.slice(0, this.settings.castCount)
+		.map((person: any) => person.name) ?? [];
+
+const certification = getCertification(
+	movie.release_dates?.results ?? [],
+);
+
+const poster = movie.poster_path
+	? `https://image.tmdb.org/t/p/w500${movie.poster_path}`
+	: '';
+
+const markdown = `---
+type: movie
+title: ${JSON.stringify(title)}
+original_title: ${JSON.stringify(originalTitle)}
+tmdb_id: ${tmdbId}
+imdb_id: ${JSON.stringify(imdbId)}
+
+released: ${releaseDate}
+year: ${year}
+runtime: ${runtime}
+imdb: ${imdbRating ?? ''}
+
+genres:
+${genres.map((genre: string) => `  - ${JSON.stringify(genre)}`).join('\n')}
+
+languages:
+${languages.map((language: string) => `  - ${JSON.stringify(language)}`).join('\n')}
+
+countries:
+${countries.map((country: string) => `  - ${JSON.stringify(country)}`).join('\n')}
+
+rated: ${JSON.stringify(certification)}
+
+director:
+${director.map((person: string) => `  - ${JSON.stringify(person)}`).join('\n')}
+
+writer:
+${writers.map((person: string) => `  - ${JSON.stringify(person)}`).join('\n')}
+
+producer:
+${producer.map((person: string) => `  - ${JSON.stringify(person)}`).join('\n')}
+
+cast:
+${cast.map((person: string) => `  - ${JSON.stringify(person)}`).join('\n')}
+
+studio:
+${studios.map((studio: string) => `  - ${JSON.stringify(studio)}`).join('\n')}
+
+poster: ${JSON.stringify(poster)}
+plot: ${JSON.stringify(movie.overview ?? '')}
+
+watched: false
+date_watched:
+rating:
+tags:
+---
+`;
+
+const folder = 'Media/Movies';
+
+if (!this.app.vault.getAbstractFileByPath(folder)) {
+	await this.app.vault.createFolder(folder);
+}
+
+const fileName = year
+	? `${title} (${year})`
+	: title;
+
+const safeFileName = sanitizeFileName(fileName);
+
+const filePath = `${folder}/${safeFileName}.md`;
+
+// 2. Also check the exact filename
+const existingPath = this.app.vault.getAbstractFileByPath(filePath);
+
+if (existingPath instanceof TFile) {
+	new Notice(`File already exists: ${filePath}`);
+	return;
+}
+
+// 3. Create the note safely
+try {
+	await this.app.vault.create(filePath, markdown);
+	new Notice(`Added: ${filePath}`);
+  console.log(`Added movie note: ${filePath}`);
+} catch (error) {
+	console.error('Failed to create movie note:', error);
+	new Notice('Could not create movie note.');
+}
+    
+	}
+}
+// to clean up movie title name.
+function sanitizeFileName(name: string): string {
+	return name.replace(/[\\/:*?"<>|]/g, '');
+}
+
+// to format the runtime of the movie in hours and minutes.
+function formatRuntime(minutes: number | null): string {
+	if (!minutes || minutes <= 0) {
+		return '';
+	}
+
+	const hours = Math.floor(minutes / 60);
+	const remainingMinutes = minutes % 60;
+
+	if (hours > 0 && remainingMinutes > 0) {
+		return `${hours}h ${remainingMinutes}m`;
+	}
+
+	if (hours > 0) {
+		return `${hours}h`;
+	}
+
+	return `${remainingMinutes}m`;
+}
+
+function getPlotPreview(plot: string, maxLength = 180): string {
+	if (plot.length <= maxLength) {
+		return plot;
+	}
+
+	return plot.substring(0, maxLength).trimEnd() + '…';
+}
+
